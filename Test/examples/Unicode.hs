@@ -1,3 +1,4 @@
+{-# LANGUAGE UnicodeSyntax #-}
 module Main where
 
 import System.Environment
