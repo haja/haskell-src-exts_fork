@@ -117,6 +117,7 @@ Library
   Exposed-modules:      Language.Haskell.Exts,
                         Language.Haskell.Exts.Parser,
                         Language.Haskell.Exts.Pretty,
+                        Language.Haskell.Exts.PrettyWithComments,
                         Language.Haskell.Exts.Syntax,
                         Language.Haskell.Exts.Extension,
                         Language.Haskell.Exts.Build,
@@ -130,6 +131,7 @@ Library
                         Language.Haskell.Exts.Annotated.Build,
                         Language.Haskell.Exts.Annotated.ExactPrint,
                         Language.Haskell.Exts.Annotated.Simplify
+                        Language.Haskell.Exts.PrettyHelper
 
   Other-modules:        Language.Haskell.Exts.ExtScheme,
                         
