@@ -130,6 +130,7 @@ Library
                         Language.Haskell.Exts.Annotated.Fixity,
                         Language.Haskell.Exts.Annotated.Build,
                         Language.Haskell.Exts.Annotated.ExactPrint,
+                        Language.Haskell.Exts.Annotated.PrettyWithComments,
                         Language.Haskell.Exts.Annotated.Simplify
 
   Other-modules:        Language.Haskell.Exts.ExtScheme,
