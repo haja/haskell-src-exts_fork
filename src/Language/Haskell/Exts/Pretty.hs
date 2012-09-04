@@ -233,7 +233,7 @@ punctuate p (d1:ds) = go d1 ds
 
 -- | render the document with a given style and mode.
 renderStyleMode :: P.Style -> PPHsMode -> Doc -> String
-renderStyleMode ppStyle ppMode d = P.renderStyle ppStyle . unDocM d $ ppMode
+renderStyleMode ppStyle ppMode d = (P.renderStyle ppStyle . unDocM d) ppMode
 
 -- | render the document with a given mode.
 renderWithMode :: PPHsMode -> Doc -> String
@@ -624,7 +624,7 @@ instance Pretty ModulePragma where
         myFsep $ [text "{-# OPTIONS", text s, text "#-}"]
     pretty (AnnModulePragma _ ann) =
         myFsep $ [text "{-# ANN", pretty ann, text "#-}"]
-        
+
 
 instance Pretty Tool where
     pretty (UnknownTool s) = text s
@@ -782,9 +782,9 @@ instance Pretty Exp where
         prettyPrec p (Case cond altList) = parensIf (p > 1) $
                 myFsep [text "case", pretty cond, text "of"]
                 $$$ ppBody caseIndent (map pretty altList)
-        prettyPrec p (Do stmtList) = parensIf (p > 1) $ 
+        prettyPrec p (Do stmtList) = parensIf (p > 1) $
                 text "do" $$$ ppBody doIndent (map pretty stmtList)
-        prettyPrec p (MDo stmtList) = parensIf (p > 1) $ 
+        prettyPrec p (MDo stmtList) = parensIf (p > 1) $
                 text "mdo" $$$ ppBody doIndent (map pretty stmtList)
         -- Constructors & Vars
         prettyPrec _ (Var name) = pretty name
@@ -818,7 +818,7 @@ instance Pretty Exp where
         prettyPrec _ (ParComp e qualLists) =
                 bracketList (intersperse (char '|') $
                                 pretty e : (punctuate comma . concatMap (map pretty) $ qualLists))
-        prettyPrec p (ExpTypeSig _pos e ty) = parensIf (p > 0) $ 
+        prettyPrec p (ExpTypeSig _pos e ty) = parensIf (p > 0) $
                 myFsep [pretty e, text "::", pretty ty]
         -- Template Haskell
         prettyPrec _ (BracketExp b) = pretty b
@@ -840,7 +840,7 @@ instance Pretty Exp where
                 myFsep $ [text "<%", pretty e, text "%>"]
         prettyPrec _ (XChildTag _ cs) =
                 myFsep $ text "<%>" : map pretty cs ++ [text "</%>"]
-        
+
         -- Pragmas
         prettyPrec p (CorePragma s e) = myFsep $ map text ["{-# CORE", show s, "#-}"] ++ [pretty e]
         prettyPrec _ (SCCPragma  s e) = myFsep $ map text ["{-# SCC",  show s, "#-}"] ++ [pretty e]

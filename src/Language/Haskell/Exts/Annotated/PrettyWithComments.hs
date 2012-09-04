@@ -30,11 +30,118 @@ import Language.Haskell.Exts.SrcLoc
 import qualified Text.PrettyPrint as P
 import Data.List (intersperse)
 
-import Control.Monad (liftM)
+import Language.Haskell.Exts.SrcLoc
+import Language.Haskell.Exts.Comments
+
+import Control.Monad (when)
+import Control.Monad.Trans
+
+import Control.Arrow ((***), (&&&))
+import Control.Monad (liftM, when)
 
 infixl 5 $$$
 
 -----------------------------------------------------------------------------
+
+
+----
+-- ExactPrint stuff
+----
+
+------------------------------------------------------
+-- The EP monad and basic combinators
+
+type Pos = (Int,Int)
+
+pos :: (SrcInfo loc) => loc -> Pos
+pos ss = (startLine ss, startColumn ss)
+
+newtype EP x = EP (Pos -> [Comment] -> (x, Pos, [Comment], ShowS))
+
+instance Monad EP where
+  return x = EP $ \l cs -> (x, l, cs, id)
+
+  EP m >>= k = EP $ \l0 c0 -> let
+        (a, l1, c1, s1) = m l0 c0
+        EP f = k a
+        (b, l2, c2, s2) = f l1 c1
+    in (b, l2, c2, s1 . s2)
+
+runEP :: EP () -> [Comment] -> String
+runEP (EP f) cs = let (_,_,_,s) = f (1,1) cs in s ""
+
+getPos :: EP Pos
+getPos = EP (\l cs -> (l,l,cs,id))
+
+setPos :: Pos -> EP ()
+setPos l = EP (\_ cs -> ((),l,cs,id))
+
+printString :: String -> EP ()
+printString str = EP (\(l,c) cs -> ((), (l,c+length str), cs, showString str))
+
+getComment :: EP (Maybe Comment)
+getComment = EP $ \l cs ->
+    let x = case cs of
+             c:_ -> Just c
+             _   -> Nothing
+     in (x, l, cs, id)
+
+dropComment :: EP ()
+dropComment = EP $ \l cs ->
+    let cs' = case cs of
+               (_:cs) -> cs
+               _      -> cs
+     in ((), l, cs', id)
+
+newLine :: EP ()
+newLine = do
+    (l,_) <- getPos
+    printString "\n"
+    setPos (l+1,1)
+
+padUntil :: Pos -> EP ()
+padUntil (l,c) = do
+    (l1,c1) <- getPos
+    case  {- trace (show ((l,c), (l1,c1))) -} () of
+     _ {-()-} | l1 >= l && c1 <= c -> printString $ replicate (c - c1) ' '
+              | l1 < l             -> newLine >> padUntil (l,c)
+              | otherwise          -> return ()
+
+
+mPrintComments :: Pos -> EP ()
+mPrintComments p = do
+    mc <- getComment
+    case mc of
+     Nothing -> return ()
+     Just (Comment multi s str) ->
+        when (pos s < p) $ do
+            dropComment
+            padUntil (pos s)
+            printComment multi str
+            setPos (srcSpanEndLine s, srcSpanEndColumn s)
+            mPrintComments p
+
+printComment :: Bool -> String -> EP ()
+printComment b str
+    | b         = printString $ "{-" ++ str ++ "-}"
+    | otherwise = printString $ "--" ++ str
+
+printWhitespace :: Pos -> EP ()
+printWhitespace p = mPrintComments p >> padUntil p
+
+printStringAt :: Pos -> String -> EP ()
+printStringAt p str = printWhitespace p >> printString str
+
+errorEP :: String -> EP a
+errorEP = fail
+
+
+
+
+----
+-- prettyPrint stuff
+----
+
 
 -- | Varieties of layout we can use.
 data PPLayout = PPOffsideRule   -- ^ classical layout
@@ -106,11 +213,25 @@ newtype (Monad m) => DocMT s m a = DocMT { runDocMT :: s -> m a }
 instance Monad m => Monad (DocMT s m) where
     return a = DocMT $ \s -> return a
     (>>=) = thenDocMT
+    (>>) = then_DocMT
+
+instance MonadTrans (DocMT s) where
+    lift = liftDocMT
+
+instance Monad m => Functor (DocMT s m) where
+    fmap f xs = do x <- xs; return (f x)
 
 thenDocMT :: Monad m => DocMT s m a -> (a -> DocMT s m b) -> DocMT s m b
 thenDocMT (DocMT x) f = DocMT $ \arg -> do res <- x arg
                                            (runDocMT $ f res) arg
 
+then_DocMT :: Monad m => DocMT s m a -> DocMT s m b -> DocMT s m b
+then_DocMT (DocMT x) f = DocMT $ \arg -> do res <- x arg
+                                            (runDocMT f) arg
+
+liftDocMT :: Monad m => m a -> DocMT s m a
+liftDocMT m = DocMT $ \s -> do a <- m
+                               return a
 
 {-# INLINE thenDocM #-}
 {-# INLINE then_DocM #-}
@@ -131,15 +252,16 @@ unDocM :: DocM s a -> (s -> a)
 unDocM (DocM f) = f
 
 -- all this extra stuff, just for this one function.
-getPPEnv :: DocM s s
-getPPEnv = DocM id
+getPPEnv :: Monad m => DocMT s m s
+getPPEnv = DocMT $ \s -> return s
 
 -- So that pp code still looks the same
 -- this means we lose some generality though
 
 -- | The document type produced by these pretty printers uses a 'PPHsMode'
 -- environment.
-type Doc = DocM PPHsMode P.Doc
+type Doc = DocMT PPHsMode EP P.Doc
+
 
 -- | Things that can be pretty-printed, including all the syntactic objects
 -- in "Language.Haskell.Exts.Syntax" and "Language.Haskell.Exts.Annotated.Syntax".
@@ -245,37 +367,37 @@ punctuate p (d1:ds) = go d1 ds
                      go d (e:es) = (d <> p) : go e es
 
 -- | render the document with a given style and mode.
-renderStyleMode :: P.Style -> PPHsMode -> Doc -> String
-renderStyleMode ppStyle ppMode d = P.renderStyle ppStyle . unDocM d $ ppMode
+renderStyleMode :: P.Style -> PPHsMode -> Doc -> EP String
+renderStyleMode ppStyle ppMode (DocMT d) = liftM (P.renderStyle ppStyle) (d ppMode)
 
 -- | render the document with a given mode.
-renderWithMode :: PPHsMode -> Doc -> String
+renderWithMode :: PPHsMode -> Doc -> EP String
 renderWithMode = renderStyleMode P.style
 
 -- | render the document with 'defaultMode'.
-render :: Doc -> String
+render :: Doc -> EP String
 render = renderWithMode defaultMode
 
 -- | pretty-print with a given style and mode.
-prettyPrintStyleMode :: Pretty a => P.Style -> PPHsMode -> a -> String
+prettyPrintStyleMode :: Pretty a => P.Style -> PPHsMode -> a -> EP String
 prettyPrintStyleMode ppStyle ppMode = renderStyleMode ppStyle ppMode . pretty
 
 -- | pretty-print with the default style and a given mode.
-prettyPrintWithMode :: Pretty a => PPHsMode -> a -> String
+prettyPrintWithMode :: Pretty a => PPHsMode -> a -> EP String
 prettyPrintWithMode = prettyPrintStyleMode P.style
 
 -- | pretty-print with the default style and 'defaultMode'.
-prettyPrint :: Pretty a => a -> String
+prettyPrint :: Pretty a => a -> EP String
 prettyPrint = prettyPrintWithMode defaultMode
 
 fullRenderWithMode :: PPHsMode -> P.Mode -> Int -> Float ->
-                      (P.TextDetails -> a -> a) -> a -> Doc -> a
-fullRenderWithMode ppMode m i f fn e mD =
-                   P.fullRender m i f fn e $ (unDocM mD) ppMode
+                      (P.TextDetails -> a -> a) -> a -> Doc -> EP a
+fullRenderWithMode ppMode m i f fn e (DocMT mD) =
+                   liftM (P.fullRender m i f fn e) (mD ppMode)
 
 
 fullRender :: P.Mode -> Int -> Float -> (P.TextDetails -> a -> a)
-              -> a -> Doc -> a
+              -> a -> Doc -> EP a
 fullRender = fullRenderWithMode defaultMode
 
 -------------------------  Pretty-Print a Module --------------------
