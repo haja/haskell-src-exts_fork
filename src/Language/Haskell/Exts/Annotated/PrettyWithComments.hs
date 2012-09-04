@@ -370,24 +370,29 @@ punctuate p (d1:ds) = go d1 ds
 renderStyleMode :: P.Style -> PPHsMode -> Doc -> EP String
 renderStyleMode ppStyle ppMode (DocMT d) = liftM (P.renderStyle ppStyle) (d ppMode)
 
+-- | render the documnet with comments, style and mode
+renderStyleModeComments :: P.Style -> PPHsMode -> Doc -> [Comment] -> String
+renderStyleModeComments style mode doc cs =
+    runEP (renderStyleMode style mode doc >>= printString) cs
+
 -- | render the document with a given mode.
-renderWithMode :: PPHsMode -> Doc -> EP String
-renderWithMode = renderStyleMode P.style
+renderWithMode :: PPHsMode -> Doc -> [Comment] -> String
+renderWithMode = renderStyleModeComments P.style
 
 -- | render the document with 'defaultMode'.
-render :: Doc -> EP String
+render :: Doc -> [Comment] -> String
 render = renderWithMode defaultMode
 
 -- | pretty-print with a given style and mode.
-prettyPrintStyleMode :: Pretty a => P.Style -> PPHsMode -> a -> EP String
-prettyPrintStyleMode ppStyle ppMode = renderStyleMode ppStyle ppMode . pretty
+prettyPrintStyleMode :: Pretty a => P.Style -> PPHsMode -> a -> [Comment] -> String
+prettyPrintStyleMode ppStyle ppMode = renderStyleModeComments ppStyle ppMode . pretty
 
 -- | pretty-print with the default style and a given mode.
-prettyPrintWithMode :: Pretty a => PPHsMode -> a -> EP String
+prettyPrintWithMode :: Pretty a => PPHsMode -> a -> [Comment] -> String
 prettyPrintWithMode = prettyPrintStyleMode P.style
 
 -- | pretty-print with the default style and 'defaultMode'.
-prettyPrint :: Pretty a => a -> EP String
+prettyPrint :: Pretty a => a -> [Comment] -> String
 prettyPrint = prettyPrintWithMode defaultMode
 
 fullRenderWithMode :: PPHsMode -> P.Mode -> Int -> Float ->
