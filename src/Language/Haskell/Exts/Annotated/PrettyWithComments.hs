@@ -116,10 +116,24 @@ mPrintComments p = do
      Just (Comment multi s str) ->
         when (pos s < p) $ do
             dropComment
-            padUntil (pos s)
+            --padUntil (pos s)
             printComment multi str
+            -- make newline after comment
+            printString "\n"
             setPos (srcSpanEndLine s, srcSpanEndColumn s)
             mPrintComments p
+
+mPrintCommentsLastPos' :: EP ()
+mPrintCommentsLastPos' = do
+    pos <- getPos
+    mPrintComments pos
+
+mPrintCommentsLastPos :: Doc -> Doc
+mPrintCommentsLastPos doc = lift mPrintCommentsLastPos' >> doc
+
+setCurPos :: (SrcInfo loc) => loc -> Doc -> Doc
+setCurPos l doc = lift (setPos $ pos l) >> doc
+
 
 printComment :: Bool -> String -> EP ()
 printComment b str
@@ -134,7 +148,6 @@ printStringAt p str = printWhitespace p >> printString str
 
 errorEP :: String -> EP a
 errorEP = fail
-
 
 
 
@@ -285,35 +298,35 @@ nest i m = m >>= return . P.nest i
 -- Literals
 
 text, ptext :: String -> Doc
-text = return . P.text
-ptext = return . P.text
+text = mPrintCommentsLastPos . return . P.text
+ptext = text
 
 char :: Char -> Doc
-char = return . P.char
+char = mPrintCommentsLastPos . return . P.char
 
 int :: Int -> Doc
-int = return . P.int
+int = mPrintCommentsLastPos . return . P.int
 
 integer :: Integer -> Doc
-integer = return . P.integer
+integer = mPrintCommentsLastPos . return . P.integer
 
 float :: Float -> Doc
-float = return . P.float
+float = mPrintCommentsLastPos . return . P.float
 
 double :: Double -> Doc
-double = return . P.double
+double = mPrintCommentsLastPos . return . P.double
 
 rational :: Rational -> Doc
-rational = return . P.rational
+rational = mPrintCommentsLastPos . return . P.rational
 
 -- Simple Combining Forms
 
 parens, brackets, braces,quotes,doubleQuotes :: Doc -> Doc
-parens d = d >>= return . P.parens
-brackets d = d >>= return . P.brackets
-braces d = d >>= return . P.braces
-quotes d = d >>= return . P.quotes
-doubleQuotes d = d >>= return . P.doubleQuotes
+parens d = d >>= mPrintCommentsLastPos . return . P.parens
+brackets d = d >>= mPrintCommentsLastPos . return . P.brackets
+braces d = d >>= mPrintCommentsLastPos . return . P.braces
+quotes d = d >>= mPrintCommentsLastPos . return . P.quotes
+doubleQuotes d = d >>= mPrintCommentsLastPos . return . P.doubleQuotes
 
 parensIf :: Bool -> Doc -> Doc
 parensIf True = parens
@@ -345,13 +358,13 @@ aM $$ bM = do{a<-aM;b<-bM;return (a P.$$ b)}
 aM $+$ bM = do{a<-aM;b<-bM;return (a P.$+$ b)}
 
 hcat,hsep,vcat,sep,cat,fsep,fcat :: [Doc] -> Doc
-hcat dl = sequence dl >>= return . P.hcat
-hsep dl = sequence dl >>= return . P.hsep
-vcat dl = sequence dl >>= return . P.vcat
-sep dl = sequence dl >>= return . P.sep
-cat dl = sequence dl >>= return . P.cat
-fsep dl = sequence dl >>= return . P.fsep
-fcat dl = sequence dl >>= return . P.fcat
+hcat dl = sequence dl >>= mPrintCommentsLastPos . return . P.hcat -- TODO apply comments to every doc in dl
+hsep dl = sequence dl >>= mPrintCommentsLastPos . return . P.hsep
+vcat dl = sequence dl >>= mPrintCommentsLastPos . return . P.vcat
+sep dl = sequence dl >>= mPrintCommentsLastPos . return . P.sep
+cat dl = sequence dl >>= mPrintCommentsLastPos . return . P.cat
+fsep dl = sequence dl >>= mPrintCommentsLastPos . return . P.fsep
+fcat dl = sequence dl >>= mPrintCommentsLastPos . return . P.fcat
 
 -- Some More
 
@@ -407,8 +420,8 @@ fullRender = fullRenderWithMode defaultMode
 
 -------------------------  Pretty-Print a Module --------------------
 instance Pretty Module where
-        pretty (Module pos m os mbWarn mbExports imp decls) =
-                markLine pos $
+        pretty (Module loc m os mbWarn mbExports imp decls) =
+                markLine loc $
                 myVcat $ map pretty os ++
                     (if m == ModuleName "" then id
                      else \x -> [topLevel (ppModuleHeader m mbWarn mbExports) x])
@@ -1292,13 +1305,14 @@ instance Pretty SrcSpan where
 
 -------------------------  Pretty-Print a Module --------------------
 instance SrcInfo pos => Pretty (A.Module pos) where
-        pretty (A.Module pos mbHead os imp decls) =
-                markLine pos $
-                myVcat $ map pretty os ++
-                    (case mbHead of
-                        Nothing -> id
-                        Just h  -> \x -> [topLevel (pretty h) x])
-                    (map pretty imp ++ map pretty decls)
+        pretty (A.Module loc mbHead os imp decls) = do
+                lift $ setPos $ pos loc
+                markLine loc $
+                    myVcat $ map pretty os ++
+                        (case mbHead of
+                            Nothing -> id
+                            Just h  -> \x -> [topLevel (pretty h) x])
+                        (map pretty imp ++ map pretty decls)
         pretty (A.XmlPage pos _mn os n attrs mattr cs) =
                 markLine pos $
                 myVcat $ map pretty os ++
@@ -1322,8 +1336,9 @@ instance SrcInfo pos => Pretty (A.Module pos) where
 
 
 --------------------------  Module Header ------------------------------
-instance Pretty (A.ModuleHead l) where
-    pretty (A.ModuleHead _ m mbWarn mbExportList) = mySep [
+instance SrcInfo l => Pretty (A.ModuleHead l) where
+    pretty (A.ModuleHead l m mbWarn mbExportList) =  setCurPos l $
+        mySep [
         text "module",
         pretty m,
         maybePP pretty mbWarn,
@@ -1336,8 +1351,9 @@ instance Pretty (A.WarningText l) where
 instance Pretty (A.ModuleName l) where
         pretty = pretty . sModuleName
 
-instance Pretty (A.ExportSpecList l) where
-        pretty (A.ExportSpecList _ especs)  = parenList $ map pretty especs
+instance SrcInfo l => Pretty (A.ExportSpecList l) where
+        pretty (A.ExportSpecList l especs) = setCurPos l $
+            parenList $ map pretty especs
 
 instance Pretty (A.ExportSpec l) where
         pretty = pretty . sExportSpec
@@ -1345,8 +1361,8 @@ instance Pretty (A.ExportSpec l) where
 instance SrcInfo pos => Pretty (A.ImportDecl pos) where
         pretty = pretty . sImportDecl
 
-instance Pretty (A.ImportSpecList l) where
-        pretty (A.ImportSpecList _ b ispecs)  =
+instance SrcInfo l => Pretty (A.ImportSpecList l) where
+        pretty (A.ImportSpecList l b ispecs)  = setCurPos l $
             (if b then text "hiding" else empty)
                 <+> parenList (map pretty ispecs)
 
@@ -1357,15 +1373,20 @@ instance Pretty (A.ImportSpec l) where
 instance SrcInfo pos => Pretty (A.Decl pos) where
         pretty = pretty . sDecl
 
-instance Pretty (A.DeclHead l) where
-    pretty (A.DHead l n tvs)       = mySep (pretty n : map pretty tvs)
-    pretty (A.DHInfix l tva n tvb) = mySep [pretty tva, pretty n, pretty tvb]
-    pretty (A.DHParen l dh)        = parens (pretty dh)
+instance SrcInfo l => Pretty (A.DeclHead l) where
+    pretty (A.DHead l n tvs)       = setCurPos l $
+        mySep (pretty n : map pretty tvs)
+    pretty (A.DHInfix l tva n tvb) = setCurPos l $
+        mySep [pretty tva, pretty n, pretty tvb]
+    pretty (A.DHParen l dh)        = setCurPos l $ parens (pretty dh)
 
-instance Pretty (A.InstHead l) where
-    pretty (A.IHead l qn ts)       = mySep (pretty qn : map pretty ts)
-    pretty (A.IHInfix l ta qn tb)  = mySep [pretty ta, pretty qn, pretty tb]
-    pretty (A.IHParen l ih)        = parens (pretty ih)
+instance SrcInfo l => Pretty (A.InstHead l) where
+    pretty (A.IHead l qn ts)       = setCurPos l $
+        mySep (pretty qn : map pretty ts)
+    pretty (A.IHInfix l ta qn tb)  = setCurPos l $
+        mySep [pretty ta, pretty qn, pretty tb]
+    pretty (A.IHParen l ih)        = setCurPos l $
+        parens (pretty ih)
 
 instance Pretty (A.DataOrNew l) where
         pretty = pretty . sDataOrNew
@@ -1400,44 +1421,49 @@ instance Pretty (A.RuleVar l) where
     pretty = pretty . sRuleVar
 
 instance SrcInfo loc => Pretty (A.ModulePragma loc) where
-    pretty (A.LanguagePragma _ ns) =
-        myFsep $ text "{-# LANGUAGE" : punctuate (char ',') (map pretty ns) ++ [text "#-}"]
-    pretty (A.OptionsPragma _ (Just tool) s) =
-        myFsep $ [text "{-# OPTIONS_" <> pretty tool, text s, text "#-}"]
-    pretty (A.OptionsPragma _ _ s) =
-        myFsep $ [text "{-# OPTIONS", text s, text "#-}"]
-    pretty (A.AnnModulePragma _ ann) =
-        myFsep $ [text "{-# ANN", pretty ann, text "#-}"]
+    pretty (A.LanguagePragma l ns) =
+        setCurPos l $
+            myFsep $ text "{-# LANGUAGE" : punctuate (char ',') (map pretty ns) ++ [text "#-}"]
+    pretty (A.OptionsPragma l (Just tool) s) =
+        setCurPos l $
+            myFsep $ [text "{-# OPTIONS_" <> pretty tool, text s, text "#-}"]
+    pretty (A.OptionsPragma l _ s) =
+        setCurPos l $
+            myFsep $ [text "{-# OPTIONS", text s, text "#-}"]
+    pretty (A.AnnModulePragma l ann) =
+        setCurPos l $
+            myFsep $ [text "{-# ANN", pretty ann, text "#-}"]
 
 instance SrcInfo loc => Pretty (A.Annotation loc) where
     pretty = pretty . sAnnotation
 
 ------------------------- Data & Newtype Bodies -------------------------
-instance Pretty (A.QualConDecl l) where
-        pretty (A.QualConDecl _pos mtvs ctxt con) =
-                myFsep [ppForall (fmap (map sTyVarBind) mtvs),
+instance SrcInfo l => Pretty (A.QualConDecl l) where
+        pretty (A.QualConDecl l mtvs ctxt con) =
+                setCurPos l $ myFsep [ppForall (fmap (map sTyVarBind) mtvs),
                     ppContext $ maybe [] sContext ctxt, pretty con]
 
-instance Pretty (A.GadtDecl l) where
-        pretty (A.GadtDecl _pos name ty) =
-                myFsep [pretty name, text "::", pretty ty]
+instance SrcInfo l => Pretty (A.GadtDecl l) where
+        pretty (A.GadtDecl l name ty) =
+                setCurPos l $ myFsep [pretty name, text "::", pretty ty]
 
 instance Pretty (A.ConDecl l) where
         pretty = pretty . sConDecl
 
-instance Pretty (A.FieldDecl l) where
-        pretty (A.FieldDecl _ names ty) =
-                myFsepSimple $ (punctuate comma . map pretty $ names) ++
+instance SrcInfo l => Pretty (A.FieldDecl l) where
+        pretty (A.FieldDecl l names ty) =
+                setCurPos l $
+                    myFsepSimple $ (punctuate comma . map pretty $ names) ++
                        [text "::", pretty ty]
 
 
 instance Pretty (A.BangType l) where
         pretty = pretty . sBangType
 
-instance Pretty (A.Deriving l) where
-        pretty (A.Deriving _ []) = text "deriving" <+> parenList []
-        pretty (A.Deriving _ [A.IHead _ d []]) = text "deriving" <+> pretty d
-        pretty (A.Deriving _ ihs) = text "deriving" <+> parenList (map pretty ihs)
+instance SrcInfo l => Pretty (A.Deriving l) where
+        pretty (A.Deriving l []) = setCurPos l $ text "deriving" <+> parenList []
+        pretty (A.Deriving l [A.IHead _ d []]) = setCurPos l $ text "deriving" <+> pretty d
+        pretty (A.Deriving l ihs) = setCurPos l $ text "deriving" <+> parenList (map pretty ihs)
 
 ------------------------- Types -------------------------
 instance Pretty (A.Type l) where
