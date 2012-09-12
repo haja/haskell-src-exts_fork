@@ -33,8 +33,8 @@ import Data.List (intersperse)
 import Language.Haskell.Exts.SrcLoc
 import Language.Haskell.Exts.Comments
 
-import Control.Monad (when)
 import Control.Monad.Trans
+import Control.Monad.State
 
 import Control.Arrow ((***), (&&&))
 import Control.Monad (liftM, when)
@@ -53,62 +53,35 @@ infixl 5 $$$
 
 type Pos = (Int,Int)
 
+data CommentData = CommentData {
+    curPos :: Pos
+    , coms :: [Comment]
+} deriving Show
+
 pos :: (SrcInfo loc) => loc -> Pos
 pos ss = (startLine ss, startColumn ss)
 
-newtype EP x = EP (Pos -> [Comment] -> (x, Pos, [Comment], ShowS))
+getPos :: StateA Pos
+getPos = gets curPos
 
-instance Monad EP where
-  return x = EP $ \l cs -> (x, l, cs, id)
+setPos :: Pos -> StateA ()
+setPos l = modify (\s -> s { curPos = l })
 
-  EP m >>= k = EP $ \l0 c0 -> let
-        (a, l1, c1, s1) = m l0 c0
-        EP f = k a
-        (b, l2, c2, s2) = f l1 c1
-    in (b, l2, c2, s1 . s2)
+mbHead :: [a] -> Maybe a
+mbHead l = case l of
+    c:_ -> Just c
+    _   -> Nothing
 
-runEP :: EP () -> [Comment] -> String
-runEP (EP f) cs = let (_,_,_,s) = f (1,1) cs in s ""
+tailSafe :: [a] -> [a]
+tailSafe l = if not $ null l then tail l else []
 
-getPos :: EP Pos
-getPos = EP (\l cs -> (l,l,cs,id))
+getComment :: StateA (Maybe Comment)
+getComment = gets $ \s -> mbHead $ coms s
 
-setPos :: Pos -> EP ()
-setPos l = EP (\_ cs -> ((),l,cs,id))
+dropComment :: StateA ()
+dropComment = modify (\s -> s { coms = tailSafe $ coms s })
 
-printString :: String -> EP ()
-printString str = EP (\(l,c) cs -> ((), (l,c+length str), cs, showString str))
-
-getComment :: EP (Maybe Comment)
-getComment = EP $ \l cs ->
-    let x = case cs of
-             c:_ -> Just c
-             _   -> Nothing
-     in (x, l, cs, id)
-
-dropComment :: EP ()
-dropComment = EP $ \l cs ->
-    let cs' = case cs of
-               (_:cs) -> cs
-               _      -> cs
-     in ((), l, cs', id)
-
-newLine :: EP ()
-newLine = do
-    (l,_) <- getPos
-    printString "\n"
-    setPos (l+1,1)
-
-padUntil :: Pos -> EP ()
-padUntil (l,c) = do
-    (l1,c1) <- getPos
-    case  {- trace (show ((l,c), (l1,c1))) -} () of
-     _ {-()-} | l1 >= l && c1 <= c -> printString $ replicate (c - c1) ' '
-              | l1 < l             -> newLine >> padUntil (l,c)
-              | otherwise          -> return ()
-
-
-mPrintComments :: Pos -> EP ()
+mPrintComments :: Pos -> StateA ()
 mPrintComments p = do
     mc <- getComment
     case mc of
@@ -119,35 +92,26 @@ mPrintComments p = do
             --padUntil (pos s)
             printComment multi str
             -- make newline after comment
-            printString "\n"
+            textNoComment "\n"
             setPos (srcSpanEndLine s, srcSpanEndColumn s)
             mPrintComments p
 
-mPrintCommentsLastPos' :: EP ()
+mPrintCommentsLastPos' :: StateA ()
 mPrintCommentsLastPos' = do
     pos <- getPos
     mPrintComments pos
 
 mPrintCommentsLastPos :: Doc -> Doc
-mPrintCommentsLastPos doc = lift mPrintCommentsLastPos' >> doc
+mPrintCommentsLastPos doc = mPrintCommentsLastPos' >> doc
 
 setCurPos :: (SrcInfo loc) => loc -> Doc -> Doc
-setCurPos l doc = lift (setPos $ pos l) >> doc
+setCurPos l doc = (setPos $ pos l) >> doc
 
 
-printComment :: Bool -> String -> EP ()
+printComment :: Bool -> String -> StateA P.Doc
 printComment b str
-    | b         = printString $ "{-" ++ str ++ "-}"
-    | otherwise = printString $ "--" ++ str
-
-printWhitespace :: Pos -> EP ()
-printWhitespace p = mPrintComments p >> padUntil p
-
-printStringAt :: Pos -> String -> EP ()
-printStringAt p str = printWhitespace p >> printString str
-
-errorEP :: String -> EP a
-errorEP = fail
+    | b         = textNoComment $ "{-" ++ str ++ "-}"
+    | otherwise = textNoComment $ "--" ++ str
 
 
 
@@ -265,15 +229,22 @@ unDocM :: DocM s a -> (s -> a)
 unDocM (DocM f) = f
 
 -- all this extra stuff, just for this one function.
-getPPEnv :: Monad m => DocMT s m s
-getPPEnv = DocMT $ \s -> return s
+--getPPEnv :: Monad m => DocMT s m s
+--getPPEnv = DocMT $ \s -> return s
+
+-- all this extra stuff, just for this one function.
+getPPEnv :: StateT CommentData (DocM s) s
+getPPEnv = lift $ DocM id
+
 
 -- So that pp code still looks the same
 -- this means we lose some generality though
 
 -- | The document type produced by these pretty printers uses a 'PPHsMode'
 -- environment.
-type Doc = DocMT PPHsMode EP P.Doc
+type StateA = StateT CommentData (DocM PPHsMode)
+type Doc = StateA P.Doc
+type Doc' = DocM PPHsMode P.Doc
 
 
 -- | Things that can be pretty-printed, including all the syntactic objects
@@ -297,9 +268,11 @@ nest i m = m >>= return . P.nest i
 
 -- Literals
 
-text, ptext :: String -> Doc
+text, ptext, textNoComment :: String -> Doc
 text = mPrintCommentsLastPos . return . P.text
 ptext = text
+textNoComment = return . P.text
+
 
 char :: Char -> Doc
 char = mPrintCommentsLastPos . return . P.char
@@ -380,25 +353,25 @@ punctuate p (d1:ds) = go d1 ds
                      go d (e:es) = (d <> p) : go e es
 
 -- | render the document with a given style and mode.
-renderStyleMode :: P.Style -> PPHsMode -> Doc -> EP String
-renderStyleMode ppStyle ppMode (DocMT d) = liftM (P.renderStyle ppStyle) (d ppMode)
+renderStyleMode :: P.Style -> PPHsMode -> Doc' -> String
+renderStyleMode ppStyle ppMode (DocM d) = (P.renderStyle ppStyle) (d ppMode)
 
 -- | render the documnet with comments, style and mode
 renderStyleModeComments :: P.Style -> PPHsMode -> Doc -> [Comment] -> String
 renderStyleModeComments style mode doc cs =
-    runEP (renderStyleMode style mode doc >>= printString) cs
+    renderStyleMode style mode (evalStateT doc (CommentData { curPos = (0,0), coms = cs }))
 
--- | render the document with a given mode.
-renderWithMode :: PPHsMode -> Doc -> [Comment] -> String
-renderWithMode = renderStyleModeComments P.style
-
--- | render the document with 'defaultMode'.
-render :: Doc -> [Comment] -> String
-render = renderWithMode defaultMode
+---- | render the document with a given mode.
+--renderWithMode :: PPHsMode -> Doc -> [Comment] -> String
+--renderWithMode = renderStyleModeComments P.style
+--
+---- | render the document with 'defaultMode'.
+--render :: Doc -> [Comment] -> String
+--render = renderWithMode defaultMode
 
 -- | pretty-print with a given style and mode.
 prettyPrintStyleMode :: Pretty a => P.Style -> PPHsMode -> a -> [Comment] -> String
-prettyPrintStyleMode ppStyle ppMode = renderStyleModeComments ppStyle ppMode . pretty
+prettyPrintStyleMode ppStyle ppMode a = renderStyleModeComments ppStyle ppMode $ pretty a
 
 -- | pretty-print with the default style and a given mode.
 prettyPrintWithMode :: Pretty a => PPHsMode -> a -> [Comment] -> String
@@ -408,15 +381,15 @@ prettyPrintWithMode = prettyPrintStyleMode P.style
 prettyPrint :: Pretty a => a -> [Comment] -> String
 prettyPrint = prettyPrintWithMode defaultMode
 
-fullRenderWithMode :: PPHsMode -> P.Mode -> Int -> Float ->
-                      (P.TextDetails -> a -> a) -> a -> Doc -> EP a
-fullRenderWithMode ppMode m i f fn e (DocMT mD) =
-                   liftM (P.fullRender m i f fn e) (mD ppMode)
+--fullRenderWithMode :: PPHsMode -> P.Mode -> Int -> Float ->
+--                      (P.TextDetails -> a -> a) -> a -> Doc -> EP a
+--fullRenderWithMode ppMode m i f fn e (DocM mD) =
+--                   liftM (P.fullRender m i f fn e) (mD ppMode)
 
 
-fullRender :: P.Mode -> Int -> Float -> (P.TextDetails -> a -> a)
-              -> a -> Doc -> EP a
-fullRender = fullRenderWithMode defaultMode
+--fullRender :: P.Mode -> Int -> Float -> (P.TextDetails -> a -> a)
+--              -> a -> Doc -> EP a
+--fullRender = fullRenderWithMode defaultMode
 
 -------------------------  Pretty-Print a Module --------------------
 instance Pretty Module where
@@ -1306,7 +1279,7 @@ instance Pretty SrcSpan where
 -------------------------  Pretty-Print a Module --------------------
 instance SrcInfo pos => Pretty (A.Module pos) where
         pretty (A.Module loc mbHead os imp decls) = do
-                lift $ setPos $ pos loc
+                setPos $ pos loc
                 markLine loc $
                     myVcat $ map pretty os ++
                         (case mbHead of
